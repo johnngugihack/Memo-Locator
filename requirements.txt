@@ -6,3 +6,4 @@ python-dotenv
 requests
 cloudinary
 pydantic
+python-multipart
