@@ -254,7 +254,7 @@ async def view_memos(request: Request):
 
         approval_status = [
             fmt(row['director_approved'], row['director_approved_at'], "Director"),
-            fmt(row['hr_approved'], row['hr_approved_at'], "HR"),
+            fmt(row['human_resource_approved'], row['hr_approved_at'], "HR"),
             fmt(row['commercial_approved'], row['commercial_approved_at'], "Commercial"),
             fmt(row['accounts_approved'], row['accounts_approved_at'], "Accounts"),
             fmt(row['ict_approved'], row['ict_approved_at'], "Ict"),
