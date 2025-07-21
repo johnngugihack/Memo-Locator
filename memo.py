@@ -348,7 +348,7 @@ async def reject_drop(memo_reject: rejectt):
     if current_status and "rejected" in current_status.lower():
         conn.close()
         return JSONResponse(
-            content={"error": f"This memo was already rejected ({current_status})"},
+            content={"error": f"This memo is already rejected by({current_status})"},
             status_code=400
         )
 
