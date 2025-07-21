@@ -107,7 +107,7 @@ async def login(creds:User):
 async def upload_file(
     person: str = Form(...),
     department: str = Form(...),
-    destination: str = Form(...),  # Expected to be a JSON list of usernames
+    destination: str = Form(...),
     email: str = Form(...),
     memo: UploadFile = File(...)
 ):
@@ -115,6 +115,7 @@ async def upload_file(
         file_bytes = await memo.read(MAX_FILE_SIZE + 1)
 
         if len(file_bytes) > MAX_FILE_SIZE:
+            # Send size warning email
             msg = EmailMessage()
             msg["Subject"] = "📩 Memo Failed To Upload"
             msg["From"] = SMTP_USER
@@ -124,13 +125,12 @@ async def upload_file(
             <html>
               <body>
                 <p style="font-size:30px"><strong>Hello {person},</strong></p>
-                <p style="font-size:16px">Your memo has been rejected because it is too large.</p>
-                <p style="font-size:16px">Try uploading a memo that is less than 5MB.</p>
-                <p style="font-size:16px"><strong>Best regards,<br>Memo System,<br>By John Ngugi</strong></p>
+                <p style="font-size:16px">Your memo was rejected because it exceeds 5MB.</p>
+                <p style="font-size:16px"><strong>Regards,<br>Memo System</strong></p>
               </body>
             </html>
             """
-            msg.set_content("Your memo is too large. Please upload one under 5MB.")
+            msg.set_content("Your memo is too large.")
             msg.add_alternative(html, subtype="html")
 
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
@@ -151,53 +151,52 @@ async def upload_file(
 
         public_id = upload_result.get("public_id")
         if not public_id:
-            raise Exception("Upload failed. No public_id returned.")
+            raise Exception("Upload failed: no public_id returned.")
 
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # Save memo to DB
+            # Save to DB
             cursor.execute(
                 "INSERT INTO memos (submitted_by, department, destination, email, image_filename) VALUES (%s, %s, %s, %s, %s)",
                 (person, department, destination, email, public_id)
             )
 
-            # Parse destination usernames
+            # Email destination usernames
             try:
                 usernames = json.loads(destination) if isinstance(destination, str) else destination
             except json.JSONDecodeError:
-                usernames = [destination]
+                usernames = [destination]  # fallback
 
             emails_sent = []
 
             for username in usernames:
                 username_clean = username.strip().lower()
                 cursor.execute("SELECT email FROM users WHERE LOWER(username) = %s", (username_clean,))
-                user_result = cursor.fetchone()
+                user = cursor.fetchone()
 
-                if user_result and user_result.get("email"):
-                    dest_email = user_result["email"]
+                if user and user.get("email"):
+                    dest_email = user["email"]
 
                     image_url = generate_signed_url(public_id)
                     image_response = requests.get(image_url)
                     image_data = base64.b64encode(image_response.content).decode("utf-8")
-                    image_extension = image_response.headers.get("Content-Type", "image/jpeg").split("/")[-1]
 
                     msg = EmailMessage()
-                    msg["Subject"] = f"📩 New Memo from {person}"
+                    msg["Subject"] = f"📩 New Memo for You"
                     msg["From"] = SMTP_USER
                     msg["To"] = dest_email
 
                     html = f"""
                     <html>
                       <body>
-                        <p style="font-size:30px"><strong>Hello {username.capitalize()},</strong></p>
-                        <p style="font-size:16px">A new memo has been submitted by <strong>{person}</strong> from <strong>{department}</strong> Department.</p>
-                        <p style="font-size:16px">Please log in to view the memo.</p>
-                        <p style="font-size:16px"><strong>Best regards,<br>Memo System,<br>By John Ngugi</strong></p>
+                        <p style="font-size:30px"><strong>Hello {username},</strong></p>
+                        <p style="font-size:16px">A new memo was submitted by <strong>{person}</strong> from <strong>{department}</strong>.</p>
+                        <p style="font-size:16px">Please check the system to review the memo.</p>
+                        <p style="font-size:16px"><strong>Regards,<br>Memo System</strong></p>
                       </body>
                     </html>
                     """
-                    msg.set_content("A new memo has been submitted. Check your email client for HTML content.")
+                    msg.set_content("A new memo has been submitted.")
                     msg.add_alternative(html, subtype="html")
 
                     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
@@ -205,7 +204,7 @@ async def upload_file(
                         smtp.login(SMTP_USER, SMTP_PASSWORD)
                         smtp.send_message(msg)
 
-                    emails_sent.append(username.capitalize())
+                    emails_sent.append(username)
 
         conn.commit()
         conn.close()
@@ -225,6 +224,7 @@ async def upload_file(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
 
 def generate_signed_url(public_id: str) -> str:
     url, _ = cloudinary_url(
