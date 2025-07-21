@@ -192,7 +192,7 @@ async def upload_file(
                     <html>
                       <body>
                         <p style="font-size:30px"><strong>Hello {dept.capitalize()} Department,</strong></p>
-                        <p style="font-size:16px">A new memo has been submitted by <strong>{person}</strong> from <strong>{department}</strong>.</p>
+                        <p style="font-size:16px">A new memo has been submitted by <strong>{person}</strong> from <strong>{department}</strong> Department.</p>
                         <p style="font-size:16px">Please visit the app to see the memo.</p>
                         <p style="font-size:16px"><strong>Best regards,<br>Memo System,<br>By John Ngugi</strong></p>
                       </body>
