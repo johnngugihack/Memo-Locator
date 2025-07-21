@@ -266,7 +266,6 @@ async def view_memos(request: Request):
             fmt(row['accounts_approved'], row['accounts_approved_at'], "Accounts"),
             fmt(row['ict_approved'], row['ict_approved_at'], "Ict"),
             fmt(row['engineering_approved'], row['engineering_approved_at'], "Engineering"),
-            
             fmt(row['registry_approved'], row['registry_approved_at'], "Registry")
         ]
 
@@ -280,17 +279,23 @@ async def view_memos(request: Request):
             "registry": row.get("registry_comment")
         }
 
-        memos.append({
+        memo_data = {
             'id': row['id'],
             'submitted_by': row.get('submitted_by', ''),
             'department': row['department'],
             'destination': row['destination'],
-            'status': row['status'],
             'image_url': image_url,
             'created_at': row['created_at'].strftime('%d/%m/%Y %H:%M:%S'),
             'approval_status': approval_status,
             'comments': comments  
-        })
+        }
+
+        # ✅ Only include status if it's rejected
+        status = row.get('status', '')
+        if status and 'rejected' in status.lower():
+            memo_data['status'] = status
+
+        memos.append(memo_data)
 
     return {"status": "OK", "data": memos}
 @app.get("/uploads/{filename}")
@@ -303,6 +308,7 @@ async def get_uploaded_file(filename: str):
 
     # Optionally: you could check if file exists on Cloudinary via API (costs time), or trust naming
     return RedirectResponse(url=cloud_url)
+
 @app.post("/approve/director/{memo_id}")
 async def approve_director(memo_id: int):
     now = datetime.now()
@@ -325,11 +331,28 @@ async def approve_director(memo_id: int):
 async def reject_drop(memo_reject: rejectt):
     memo_id = memo_reject.memoId
     role = memo_reject.role.lower()
-    comment=memo_reject.comment
+    comment = memo_reject.comment
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Update status
+    # Check if memo exists and is already rejected
+    cursor.execute("SELECT status FROM memos WHERE id = %s", (memo_id,))
+    result = cursor.fetchone()
+
+    if not result:
+        conn.close()
+        return JSONResponse(content={"error": "Memo not found"}, status_code=404)
+
+    current_status = result['status'] if isinstance(result, dict) else result[0]
+    if current_status and "rejected" in current_status.lower():
+        conn.close()
+        return JSONResponse(
+            content={"error": f"This memo was already rejected ({current_status})"},
+            status_code=400
+        )
+
+    # Proceed to reject the memo
     approval_column = f"{role}_approved"
     timestamp_column = f"{role}_approved_at"
     message_column = f"{role}_comment"
@@ -344,20 +367,20 @@ async def reject_drop(memo_reject: rejectt):
         WHERE id = %s
     """, (comment, new_status, memo_id))
 
-    # Get email and image public_id
+    # Get user email and image filename
     cursor.execute("SELECT email, image_filename FROM memos WHERE id=%s", (memo_id,))
     result = cursor.fetchone()
     conn.commit()
     conn.close()
 
     if not result:
-        raise HTTPException(status_code=404, detail="Memo not found")
+        raise HTTPException(status_code=404, detail="Memo found but related email/image missing.")
 
     email = result["email"]
     public_id = result["image_filename"]
 
+    # Try to send the email
     try:
-        # Get signed URL and image content
         image_url = generate_signed_url(public_id)
         response = requests.get(image_url)
 
@@ -367,13 +390,11 @@ async def reject_drop(memo_reject: rejectt):
         image_data = response.content
         image_type = response.headers.get("Content-Type", "image/jpeg").split("/")[-1]
 
-        # Prepare email
         msg = EmailMessage()
         msg['Subject'] = f"📩 Your memo has been rejected by {role.capitalize()}"
         msg['From'] = SMTP_USER
         msg['To'] = email
 
-        # HTML with embedded image via CID
         html = f"""
         <html>
           <body>
@@ -391,27 +412,49 @@ async def reject_drop(memo_reject: rejectt):
         msg.add_alternative(html, subtype='html')
         msg.get_payload()[1].add_related(image_data, maintype='image', subtype=image_type, cid='memoimage')
 
-        # Send email
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASSWORD)
             smtp.send_message(msg)
 
+        return {
+            "message": f"{role.capitalize()} rejection successful. Notification sent to {email}"
+        }
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
-
-    return {"message": f"{role.capitalize()} rejection successful. Notification sent to {email}"}
-
+        print(f"Email send failed: {str(e)}")  # Log the error on the server
+        return {
+            "message": f"{role.capitalize()} rejection saved, but failed to send email.",
+            "email_error": str(e)
+        }
 @app.post("/approve")
 async def approve(data: ApprovalData):
     memo_id = data.memo_id
     role = data.role.lower()
-    comment=data.comment
+    comment = data.comment
 
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Update approval column and status
+    # Check memo status
+    cursor.execute("SELECT status FROM memos WHERE id = %s", (memo_id,))
+    result = cursor.fetchone()
+
+    if not result:
+        conn.close()
+        return JSONResponse(content={"error": "Memo not found"}, status_code=404)
+
+    current_status = result['status'] if isinstance(result, dict) else result[0]
+    if 'rejected' in current_status.lower():
+        rejected_role = current_status.lower().split(' rejected')[0].strip()
+        if role != rejected_role:
+            conn.close()
+            return JSONResponse(
+                content={"error": f"Memo has already been rejected by {rejected_role}, cannot be approved by others."},
+                status_code=400
+            )
+
+    # Update approval
     approval_column = f"{role}_approved"
     message_column = f"{role}_comment"
     timestamp_column = f"{role}_approved_at"
@@ -426,29 +469,29 @@ async def approve(data: ApprovalData):
         WHERE id = %s
     """, (comment, new_status, memo_id))
 
-    # Fetch email and image public ID
+    # Fetch email + image
     cursor.execute("SELECT email, image_filename FROM memos WHERE id=%s", (memo_id,))
     result = cursor.fetchone()
     conn.commit()
     conn.close()
 
     if not result:
-        raise HTTPException(status_code=404, detail="Memo not found")
+        return JSONResponse(content={"error": "Memo found but missing email/image"}, status_code=404)
 
     email = result["email"]
     public_id = result["image_filename"]
 
-    # Send approval email
     try:
+        # Prepare image
         image_url = generate_signed_url(public_id)
         response = requests.get(image_url)
-
         if response.status_code != 200:
             raise Exception("Failed to fetch image from Cloudinary")
 
         image_data = response.content
         image_type = response.headers.get("Content-Type", "image/jpeg").split("/")[-1]
 
+        # Compose email
         msg = EmailMessage()
         msg['Subject'] = f"📩 Your memo has been approved by {role.capitalize()}"
         msg['From'] = SMTP_USER
@@ -471,15 +514,23 @@ async def approve(data: ApprovalData):
         msg.add_alternative(html, subtype='html')
         msg.get_payload()[1].add_related(image_data, maintype='image', subtype=image_type, cid='memoimage')
 
+        # Send email
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
             smtp.starttls()
             smtp.login(SMTP_USER, SMTP_PASSWORD)
             smtp.send_message(msg)
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+        # ✅ SUCCESS response
+        return {
+            "message": f"{role.capitalize()} approval successful. Notification sent to {email}"
+        }
 
-    return {"message": f"{role.capitalize()} approval successful. Notification sent to {email}"}
+    except Exception as e:
+        print(f"Email failed: {e}")
+        return {
+            "message": f"{role.capitalize()} approval saved, but failed to send email.",
+            "email_error": str(e)
+        }
 
 @app.get("/download-all")
 async def download_all_images():
