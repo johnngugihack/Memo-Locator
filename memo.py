@@ -107,7 +107,7 @@ async def login(creds:User):
 async def upload_file(
     person: str = Form(...),
     department: str = Form(...),
-    destination: str = Form(...),
+    destination: str = Form(...),  # Expected to be a JSON list of usernames
     email: str = Form(...),
     memo: UploadFile = File(...)
 ):
@@ -161,22 +161,21 @@ async def upload_file(
                 (person, department, destination, email, public_id)
             )
 
-            # Notify all departments in the destination list
+            # Parse destination usernames
             try:
-                destinations = json.loads(destination) if isinstance(destination, str) else destination
+                usernames = json.loads(destination) if isinstance(destination, str) else destination
             except json.JSONDecodeError:
-                destinations = [destination]  # fallback
+                usernames = [destination]
 
             emails_sent = []
 
-            for dept in destinations:
-                dept_clean = dept.strip().lower()
+            for username in usernames:
+                username_clean = username.strip().lower()
+                cursor.execute("SELECT email FROM users WHERE LOWER(username) = %s", (username_clean,))
+                user_result = cursor.fetchone()
 
-                cursor.execute("SELECT email FROM users WHERE LOWER(role) = %s", (dept_clean,))
-                dest_result = cursor.fetchone()
-
-                if dest_result and dest_result.get("email"):
-                    dest_email = dest_result["email"]
+                if user_result and user_result.get("email"):
+                    dest_email = user_result["email"]
 
                     image_url = generate_signed_url(public_id)
                     image_response = requests.get(image_url)
@@ -184,21 +183,21 @@ async def upload_file(
                     image_extension = image_response.headers.get("Content-Type", "image/jpeg").split("/")[-1]
 
                     msg = EmailMessage()
-                    msg["Subject"] = f"📩 New Memo Submitted to {dept.capitalize()} Department"
+                    msg["Subject"] = f"📩 New Memo from {person}"
                     msg["From"] = SMTP_USER
                     msg["To"] = dest_email
 
                     html = f"""
                     <html>
                       <body>
-                        <p style="font-size:30px"><strong>Hello {dept.capitalize()} Department,</strong></p>
+                        <p style="font-size:30px"><strong>Hello {username.capitalize()},</strong></p>
                         <p style="font-size:16px">A new memo has been submitted by <strong>{person}</strong> from <strong>{department}</strong> Department.</p>
-                        <p style="font-size:16px">Please visit the app to see the memo.</p>
+                        <p style="font-size:16px">Please log in to view the memo.</p>
                         <p style="font-size:16px"><strong>Best regards,<br>Memo System,<br>By John Ngugi</strong></p>
                       </body>
                     </html>
                     """
-                    msg.set_content("A new memo has been submitted. Please check your email client for HTML content.")
+                    msg.set_content("A new memo has been submitted. Check your email client for HTML content.")
                     msg.add_alternative(html, subtype="html")
 
                     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
@@ -206,7 +205,7 @@ async def upload_file(
                         smtp.login(SMTP_USER, SMTP_PASSWORD)
                         smtp.send_message(msg)
 
-                    emails_sent.append(dept.capitalize())
+                    emails_sent.append(username.capitalize())
 
         conn.commit()
         conn.close()
@@ -218,7 +217,7 @@ async def upload_file(
             }
         else:
             return {
-                "message": f"⚠️ Memo uploaded, but no email sent — no matching departments found.",
+                "message": f"⚠️ Memo uploaded, but no email sent — no matching usernames found.",
                 "public_id": public_id
             }
 
@@ -226,7 +225,6 @@ async def upload_file(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
 
 def generate_signed_url(public_id: str) -> str:
     url, _ = cloudinary_url(
