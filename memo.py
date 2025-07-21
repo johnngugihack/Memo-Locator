@@ -102,7 +102,6 @@ async def login(creds:User):
     return {"status": "Login successful", "user": user}
 
 
-
 @app.post("/upload")
 async def upload_file(
     person: str = Form(...),
@@ -115,18 +114,17 @@ async def upload_file(
         file_bytes = await memo.read(MAX_FILE_SIZE + 1)
 
         if len(file_bytes) > MAX_FILE_SIZE:
-            # Send size warning email
+            # Send error email to uploader
             msg = EmailMessage()
-            msg["Subject"] = "📩 Memo Failed To Upload"
+            msg["Subject"] = "📩 Memo Upload Failed"
             msg["From"] = SMTP_USER
             msg["To"] = email
 
             html = f"""
             <html>
               <body>
-                <p style="font-size:30px"><strong>Hello {person},</strong></p>
-                <p style="font-size:16px">Your memo was rejected because it exceeds 5MB.</p>
-                <p style="font-size:16px"><strong>Regards,<br>Memo System</strong></p>
+                <p><strong>Hello {person},</strong></p>
+                <p>Your memo was rejected because it exceeds 5MB.</p>
               </body>
             </html>
             """
@@ -138,9 +136,9 @@ async def upload_file(
                 smtp.login(SMTP_USER, SMTP_PASSWORD)
                 smtp.send_message(msg)
 
-            return {"message": "❌ Memo is too large. Notification sent to user."}
+            return {"message": "❌ Memo too large. Notification sent."}
 
-        # Upload to Cloudinary
+        # Upload memo to Cloudinary
         upload_func = partial(
             cloudinary.uploader.upload,
             file_bytes,
@@ -148,10 +146,9 @@ async def upload_file(
             type="authenticated"
         )
         upload_result = await asyncio.to_thread(upload_func)
-
         public_id = upload_result.get("public_id")
         if not public_id:
-            raise Exception("Upload failed: no public_id returned.")
+            raise Exception("Upload failed.")
 
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -161,38 +158,36 @@ async def upload_file(
                 (person, department, destination, email, public_id)
             )
 
-            # Email destination usernames
+            # Parse destination departments
             try:
-                usernames = json.loads(destination) if isinstance(destination, str) else destination
+                dept_list = json.loads(destination) if isinstance(destination, str) else destination
             except json.JSONDecodeError:
-                usernames = [destination]  # fallback
+                dept_list = [destination]
 
             emails_sent = []
 
-            for username in usernames:
-                username_clean = username.strip().lower()
-                cursor.execute("SELECT email FROM users WHERE LOWER(username) = %s", (username_clean,))
-                user = cursor.fetchone()
+            for dept in dept_list:
+                dept_clean = dept.strip().lower()
+                cursor.execute("SELECT email FROM users WHERE LOWER(role) = %s", (dept_clean,))
+                results = cursor.fetchall()
 
-                if user and user.get("email"):
-                    dest_email = user["email"]
+                for row in results:
+                    dest_email = row.get("email")
+                    if not dest_email:
+                        continue
 
                     image_url = generate_signed_url(public_id)
-                    image_response = requests.get(image_url)
-                    image_data = base64.b64encode(image_response.content).decode("utf-8")
-
                     msg = EmailMessage()
-                    msg["Subject"] = f"📩 New Memo for You"
+                    msg["Subject"] = f"📩 New Memo for {dept.title()} Department"
                     msg["From"] = SMTP_USER
                     msg["To"] = dest_email
 
                     html = f"""
                     <html>
                       <body>
-                        <p style="font-size:30px"><strong>Hello {username},</strong></p>
-                        <p style="font-size:16px">A new memo was submitted by <strong>{person}</strong> from <strong>{department}</strong>.</p>
-                        <p style="font-size:16px">Please check the system to review the memo.</p>
-                        <p style="font-size:16px"><strong>Regards,<br>Memo System</strong></p>
+                        <p><strong>Hello {dept.title()} Department,</strong></p>
+                        <p>A new memo was submitted by <strong>{person}</strong> from <strong>{department}</strong>.</p>
+                        <p>Please check the system for details.</p>
                       </body>
                     </html>
                     """
@@ -204,19 +199,19 @@ async def upload_file(
                         smtp.login(SMTP_USER, SMTP_PASSWORD)
                         smtp.send_message(msg)
 
-                    emails_sent.append(username)
+                    emails_sent.append(dest_email)
 
         conn.commit()
         conn.close()
 
         if emails_sent:
             return {
-                "message": f"✅ Memo uploaded and email sent to: {', '.join(emails_sent)}.",
+                "message": f"✅ Memo uploaded and emails sent to: {', '.join(emails_sent)}.",
                 "public_id": public_id
             }
         else:
             return {
-                "message": f"⚠️ Memo uploaded, but no email sent — no matching usernames found.",
+                "message": "⚠️ Memo uploaded, but no email sent — no matching departments found.",
                 "public_id": public_id
             }
 
