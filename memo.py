@@ -139,7 +139,7 @@ async def upload_file(
     token_data: dict = Depends(verify_token)
 ):
     try:
-        print({destination})
+       
         username = token_data["sub"]
         user_role = token_data["role"]
 
