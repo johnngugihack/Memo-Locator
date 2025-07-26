@@ -1,5 +1,4 @@
-
-from fastapi import FastAPI, Form, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, Form, File, UploadFile, HTTPException, Request, Header, Depends
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +11,7 @@ import zipfile
 import io
 import requests
 import base64
+import jwt
 import cloudinary
 import cloudinary.uploader
 from pathlib import Path
@@ -32,6 +32,8 @@ from email.message import EmailMessage
 
 
 app = FastAPI()
+
+ALGORITHM = "HS256"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Change "*" to a specific domain in production
@@ -49,6 +51,8 @@ SMTP_SERVER = os.getenv('SMTP_SERVER')   # Replace with your SMTP server
 SMTP_PORT = os.getenv('SMTP_PORT')                    # Use 465 for SSL, 587 for TLS
 SMTP_USER = os.getenv('SMTP_USER')
 SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
+SECRET_KEY = os.getenv('SECRET_KEY')
+
 
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 cloudinary.config(
@@ -78,52 +82,89 @@ class ApprovalData(BaseModel):
     role: str
     comment: str
 @app.post("/login")
-async def login(creds:User):
-    conn=get_db_connection()
-    cursor=conn.cursor()
+async def login(creds: User):
+    conn = get_db_connection()
+    cursor = conn.cursor()  # use dictionary=True if using MySQL connector for easier dict handling
+
     sql = "SELECT * FROM users WHERE username=%s"
     cursor.execute(sql, (creds.username,))
     user = cursor.fetchone()
-    
+
+    if not user or creds.password != user["password"]:
+        cursor.close()
+        conn.close()
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    # Generate JWT token
+    payload = {
+        "sub": user["username"],
+        "role": user["role"],
+        "iat": datetime.utcnow(),
+        "exp": datetime.utcnow() + timedelta(hours=1)
+    }
+
+    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+    # Save token in the database
+    update_sql = "UPDATE users SET token=%s WHERE username=%s"
+    cursor.execute(update_sql, (token, creds.username))
+    conn.commit()
+
     cursor.close()
     conn.close()
 
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-
-    # Plain text password check (replace with hash check in production)
-    if creds.password != user["password"]:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
-
-    # Remove password before sending response (for security)
     user.pop("password")
-    
-    # Now 'user' dict includes roles or any other info stored in your users table
+    user["token"] = token
+
     return {"status": "Login successful", "user": user}
+
+
+def verify_token(authorization: str = Header(...)):
+    try:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer":
+            raise HTTPException(status_code=403, detail="Invalid authentication scheme")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=403, detail="Invalid token")
 
 
 @app.post("/upload")
 async def upload_file(
-    person: str = Form(...),
-    department: str = Form(...),
     destination: str = Form(...),
-    email: str = Form(...),
-    memo: UploadFile = File(...)
+    memo: UploadFile = File(...),
+    token_data: dict = Depends(verify_token)
 ):
     try:
-        file_bytes = await memo.read(MAX_FILE_SIZE + 1)
+        print({destination})
+        username = token_data["sub"]
+        user_role = token_data["role"]
 
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor=pymysql.cursors.DictCursor)
+
+        # Get user email
+        cursor.execute("SELECT email FROM users WHERE username = %s", (username,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        email = user["email"]
+
+        # Check file size
+        file_bytes = await memo.read(MAX_FILE_SIZE + 1)
         if len(file_bytes) > MAX_FILE_SIZE:
-            # Send error email to uploader
             msg = EmailMessage()
             msg["Subject"] = "📩 Memo Upload Failed"
             msg["From"] = SMTP_USER
             msg["To"] = email
-
             html = f"""
             <html>
               <body>
-                <p><strong>Hello {person},</strong></p>
+                <p><strong>Hello {username},</strong></p>
                 <p>Your memo was rejected because it exceeds 5MB.</p>
               </body>
             </html>
@@ -138,7 +179,7 @@ async def upload_file(
 
             return {"message": "❌ Memo too large. Notification sent."}
 
-        # Upload memo to Cloudinary
+        # Upload to Cloudinary
         upload_func = partial(
             cloudinary.uploader.upload,
             file_bytes,
@@ -150,56 +191,53 @@ async def upload_file(
         if not public_id:
             raise Exception("Upload failed.")
 
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            # Save to DB
-            cursor.execute(
-                "INSERT INTO memos (submitted_by, department, destination, email, image_filename) VALUES (%s, %s, %s, %s, %s)",
-                (person, department, destination, email, public_id)
-            )
+        # Save memo to database
+        cursor.execute(
+            "INSERT INTO memos (submitted_by, department, destination, email, image_filename) VALUES (%s, %s, %s, %s, %s)",
+            (username, user_role, destination, email, public_id)
+        )
 
-            # Parse destination departments
-            try:
-                dept_list = json.loads(destination) if isinstance(destination, str) else destination
-            except json.JSONDecodeError:
-                dept_list = [destination]
+        # Parse and notify destination departments
+        try:
+            dept_list = json.loads(destination) if isinstance(destination, str) else destination
+        except json.JSONDecodeError:
+            dept_list = [destination]
 
-            emails_sent = []
+        emails_sent = []
 
-            for dept in dept_list:
-                dept_clean = dept.strip().lower()
-                cursor.execute("SELECT email FROM users WHERE LOWER(role) = %s", (dept_clean,))
-                results = cursor.fetchall()
+        for dept in dept_list:
+            dept_clean = dept.strip().lower()
+            cursor.execute("SELECT email FROM users WHERE LOWER(role) = %s", (dept_clean,))
+            results = cursor.fetchall()
 
-                for row in results:
-                    dest_email = row.get("email")
-                    if not dest_email:
-                        continue
+            for row in results:
+                dest_email = row.get("email")
+                if not dest_email:
+                    continue
 
-                    image_url = generate_signed_url(public_id)
-                    msg = EmailMessage()
-                    msg["Subject"] = f"📩 New Memo for {dept.title()} Department"
-                    msg["From"] = SMTP_USER
-                    msg["To"] = dest_email
+                image_url = generate_signed_url(public_id)
+                msg = EmailMessage()
+                msg["Subject"] = f"📩 New Memo for {dept.title()} Department"
+                msg["From"] = SMTP_USER
+                msg["To"] = dest_email
+                html = f"""
+                <html>
+                  <body>
+                    <p><strong>Hello {dept.title()} Department,</strong></p>
+                    <p>A new memo was submitted by <strong>{username}</strong> from <strong>{user_role}</strong>.</p>
+                    <p>Please check the system for details.</p>
+                  </body>
+                </html>
+                """
+                msg.set_content("A new memo has been submitted.")
+                msg.add_alternative(html, subtype="html")
 
-                    html = f"""
-                    <html>
-                      <body>
-                        <p><strong>Hello {dept.title()} Department,</strong></p>
-                        <p>A new memo was submitted by <strong>{person}</strong> from <strong>{department}</strong>.</p>
-                        <p>Please check the system for details.</p>
-                      </body>
-                    </html>
-                    """
-                    msg.set_content("A new memo has been submitted.")
-                    msg.add_alternative(html, subtype="html")
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
+                    smtp.starttls()
+                    smtp.login(SMTP_USER, SMTP_PASSWORD)
+                    smtp.send_message(msg)
 
-                    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp:
-                        smtp.starttls()
-                        smtp.login(SMTP_USER, SMTP_PASSWORD)
-                        smtp.send_message(msg)
-
-                    emails_sent.append(dest_email)
+                emails_sent.append(dest_email)
 
         conn.commit()
         conn.close()
@@ -221,6 +259,16 @@ async def upload_file(
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
+def generate_signed_url(public_id: str) -> str:
+    url, _ = cloudinary_url(
+        public_id,
+        type="authenticated",
+        resource_type="image",
+        sign_url=True,
+        secure=True,
+        expires_at=(datetime.utcnow() + timedelta(hours=1)).timestamp()
+    )
+    return url
 def generate_signed_url(public_id: str) -> str:
     url, _ = cloudinary_url(
         public_id,
