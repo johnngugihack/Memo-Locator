@@ -307,7 +307,7 @@ async def view_memos(request: Request):
             fmt(row['accounts_approved'], row['accounts_approved_at'], "Accounts"),
             fmt(row['ict_approved'], row['ict_approved_at'], "Ict"),
             fmt(row['engineering_approved'], row['engineering_approved_at'], "Engineering"),
-            fmt(row['registry_approved'], row['registry_approved_at'], "Registry")
+            fmt(row['registry_approved'], row['registry_approved_at'], "Registry"),
             fmt(row['audit_approved'], row['audit_approved_at'], "Audit")
         ]
 
@@ -318,7 +318,7 @@ async def view_memos(request: Request):
             "accounts": row.get("accounts_comment"),
             "ict": row.get("ict_comment"),
             "engineering": row.get("engineering_comment"),
-            "registry": row.get("registry_comment")
+            "registry": row.get("registry_comment"),
             "audit": row.get("audit_comment")
         }
 
