@@ -99,6 +99,7 @@ async def login(creds: User):
     payload = {
         "sub": user["username"],
         "role": user["role"],
+        "vote": user["can_vote"],
         "iat": datetime.utcnow(),
         "exp": datetime.utcnow() + timedelta(hours=1)
     }
