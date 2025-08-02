@@ -101,7 +101,7 @@ async def login(creds: User):
         "role": user["role"],
         "vote": user["can_vote"],
         "iat": datetime.utcnow(),
-        "exp": datetime.utcnow() + timedelta(hours=1)
+        "exp": datetime.utcnow() + timedelta(days=1)
     }
 
     token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
