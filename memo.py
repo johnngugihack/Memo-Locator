@@ -282,7 +282,7 @@ def generate_signed_url(public_id: str) -> str:
     return url
 
 @app.get("/view")
-async def view_memos(request: Request):
+async def view_memos(request: Request, token_data: dict = Depends(verify_token)):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM memos")
@@ -374,7 +374,7 @@ async def approve_director(memo_id: int):
     return {"message": f"Memo {memo_id} approved by Director"}
 
 @app.post("/reject")
-async def reject_drop(memo_reject: rejectt):
+async def reject_drop(memo_reject: rejectt, token_data: dict = Depends(verify_token)):
     memo_id = memo_reject.memoId
     role = memo_reject.role.lower()
     comment = memo_reject.comment
@@ -474,7 +474,7 @@ async def reject_drop(memo_reject: rejectt):
             "email_error": str(e)
         }
 @app.post("/approve")
-async def approve(data: ApprovalData):
+async def approve(data: ApprovalData, token_data: dict = Depends(verify_token)):
     memo_id = data.memo_id
     role = data.role.lower()
     comment = data.comment
