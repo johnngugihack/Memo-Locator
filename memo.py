@@ -282,7 +282,7 @@ def generate_signed_url(public_id: str) -> str:
     return url
 
 @app.get("/view")
-async def view_memos(request: Request, token_data: dict = Depends(verify_token)):
+async def view_memos(request: Request):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM memos")
