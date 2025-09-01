@@ -374,39 +374,17 @@ async def view_memos(request: Request):
                 return f"{label} approved"
             return f"Pending approval from {label}"
 
-        approval_status = [
-            fmt(row['director_approved'], row['director_approved_at'], "Director"),
-            fmt(row['hr_approved'], row['hr_approved_at'], "HR"),
-            fmt(row['commercial_approved'], row['commercial_approved_at'], "Commercial"),
-            fmt(row['accounts_approved'], row['accounts_approved_at'], "Accounts"),
-            fmt(row['ict_approved'], row['ict_approved_at'], "Ict"),
-            fmt(row['engineering_approved'], row['engineering_approved_at'], "Engineering"),
-            fmt(row['registry_approved'], row['registry_approved_at'], "Registry"),
-            fmt(row['audit_approved'], row['audit_approved_at'], "Audit"),
-            fmt(row['finance_approved'], row['finance_approved_at'], "Finance")
-        ]
 
-        comments = {
-            "director": row.get("director_comment"),
-            "hr": row.get("hr_comment"),
-            "commercial": row.get("commercial_comment"),
-            "accounts": row.get("accounts_comment"),
-            "ict": row.get("ict_comment"),
-            "engineering": row.get("engineering_comment"),
-            "registry": row.get("registry_comment"),
-            "audit": row.get("audit_comment"),
-            "finance": row.get("finance_comment")
-        }
-
+       
         memo_data = {
             'id': row['id'],
             'submitted_by': row.get('submitted_by', ''),
             'department': row['department'],
             'destination': row['destination'],
             'image_url': image_url,
-            'created_at': row['created_at'].strftime('%d/%m/%Y %H:%M:%S'),
-            'approval_status': approval_status,
-            'comments': comments  
+            'created_at': row['created_at'].strftime('%d/%m/%Y %H:%M:%S')
+        
+            
         }
 
         # ✅ Only include status if it's rejected
